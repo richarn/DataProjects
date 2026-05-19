@@ -28,8 +28,6 @@ import os
 os.environ["MISTRAL_API_KEY"] = userdata.get("MISTRAL_API_KEY")
 print("✅ API Key cargada correctamente")
 
-# hN52sFFQiQkRTjUIoZjQM8H5sYJPv4J4
-
 """# Instalar mistral y Testing de conexion"""
 
 !pip install langchain-mistralai
@@ -139,3 +137,119 @@ print("\n🤖", respuesta["output"])
 
 respuesta = agent.invoke("¿Cuál fue el país donde mayor venta hubo?")
 print("\n🤖", respuesta["output"])
+
+"""# CON RAG"""
+
+!pip install chromadb sentence-transformers langchain-community
+
+!pip install langchain-mistralai
+
+import chromadb
+import sentence_transformers
+import langchain_community
+
+print("ChromaDB version:", chromadb.__version__)
+print("Sentence Transformers version:", sentence_transformers.__version__)
+print("✅ Todo instalado correctamente")
+
+"""# Convertir el CSV en documentos de texto"""
+
+from langchain_core.documents import Document
+
+documentos = []
+
+for _, fila in df.iterrows():
+    texto = f"""
+    Orden: {fila['ORDERNUMBER']}
+    Producto: {fila['PRODUCTLINE']}
+    Cliente: {fila['CUSTOMERNAME']}
+    Ciudad: {fila['CITY']}
+    País: {fila['COUNTRY']}
+    Cantidad: {fila['QUANTITYORDERED']}
+    Precio unitario: {fila['PRICEEACH']}
+    Total venta: {fila['SALES']}
+    Estado: {fila['STATUS']}
+    Tamaño del deal: {fila['DEALSIZE']}
+    Fecha: {fila['ORDERDATE']}
+    """
+
+    documentos.append(Document(page_content=texto))
+
+print(f"✅ {len(documentos)} documentos creados")
+print("\nEjemplo del primer documento:")
+print(documentos[0].page_content)
+
+"""# crear embbedings"""
+
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+# Modelo de embeddings gratuito y local
+embeddings = HuggingFaceEmbeddings(
+    model_name="all-MiniLM-L6-v2"
+)
+
+# Crear la base vectorial con los documentos
+vectorstore = Chroma.from_documents(
+    documents=documentos,
+    embedding=embeddings,
+    collection_name="ventas"
+)
+
+print(f"✅ ChromaDB creado con {vectorstore._collection.count()} documentos indexados")
+
+!pip install langchain==0.2.0 langchain-community==0.2.0
+
+"""# Crear Agente RAG con Mistral"""
+
+from langchain_mistralai import ChatMistralAI
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+
+# LLM
+llm = ChatMistralAI(model="mistral-small-latest", temperature=0)
+
+# Retriever
+retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+
+# Prompt
+prompt = PromptTemplate.from_template("""
+Sos un analista de datos experto en ventas.
+Trabajás con un DataFrame que tiene estas columnas:
+- ORDERNUMBER: número de orden
+- QUANTITYORDERED: cantidad de productos pedidos
+- PRICEEACH: precio unitario
+- SALES: total de la venta
+- ORDERDATE: fecha del pedido
+- STATUS: estado del pedido (Shipped, Cancelled, Pending, On Hold)
+- PRODUCTLINE: línea de producto
+- CUSTOMERNAME: nombre del cliente
+- CITY: ciudad
+- COUNTRY: país
+- DEALSIZE: tamaño del deal (Small, Medium, Large)
+
+Respondé siempre en español, de forma clara y concisa.
+Si no podés responder, decilo claramente.
+
+Contexto:
+{context}
+
+Pregunta: {question}
+
+Respuesta:
+""")
+
+# Función para formatear documentos recuperados
+def formatear_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+# Cadena RAG moderna
+rag_chain = (
+    {"context": retriever | formatear_docs, "question": RunnablePassthrough()}
+    | prompt
+    | llm
+    | StrOutputParser()
+)
+
+print("✅ Agente RAG creado correctamente")
